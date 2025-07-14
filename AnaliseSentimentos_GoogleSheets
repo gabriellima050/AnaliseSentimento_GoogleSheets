@@ -1,0 +1,116 @@
+//Insira a API do Groq abaixo
+
+const GROQ_API_KEY = '';
+
+// Cria o menu personalizado quando o Google Sheets é aberto.
+function onOpen() {
+  SpreadsheetApp.getUi()
+    .createMenu('✉️ Analisar Sentimentos')
+    .addItem('Iniciar Análise', 'analisarSentimentos')
+    .addToUi();
+}
+
+function analisarSentimentos() {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
+  const dados = sheet.getDataRange().getValues();
+  const header = dados[0];
+
+  // Coluna de entrada esperada -- Ajuste de acordo com a sua coluna
+  const colIndexTexto = header.indexOf("Resposta do Cliente");
+  if (colIndexTexto === -1) {
+    SpreadsheetApp.getUi().alert("⚠️ Coluna 'Resposta do Cliente' não encontrada.");
+    return;
+  }
+
+  // Criar colunas de análise, se não existirem
+  const colunasIA = ["Sentimento", "Confiança", "Categoria", "Emoção", "Palavras-chave"];
+  colunasIA.forEach(coluna => {
+    if (!header.includes(coluna)) {
+      sheet.getRange(1, header.length + 1).setValue(coluna);
+      header.push(coluna);
+    }
+  });
+
+  const novaColunaInicio = header.indexOf("Sentimento");
+
+  let positivos = 0;
+  let negativos = 0;
+  let neutros = 0;
+
+  for (let i = 1; i < dados.length; i++) {
+    const resposta = dados[i][colIndexTexto];
+    if (!resposta || resposta.trim() === "") continue;
+
+// Ajuste o prompt abaixo para o seu negócio
+    const prompt = `
+Você é um analisador de sentimentos. Analise o seguinte feedback de cliente e retorne os resultados diretamente, sem explicações ou introduções. 
+
+Formato da resposta: 
+sentimento|confiança|categoria|emoção|palavra1,palavra2,...
+
+Exemplo de saída correta: 
+positivo|0.92|elogio|alegria|rápido,atendimento,ótimo
+
+Agora analise o seguinte feedback: """${resposta}"""
+
+Formato de resposta: sentimento|confiança|categoria|emoção|palavra1,palavra2,...
+`;
+
+    const resultado = chamarIA(prompt);
+
+    if (!resultado || resultado.split("|").length < 5) {
+      sheet.getRange(i + 1, novaColunaInicio + 1, 1, 5).setValues([["neutro", "", "não identificado", "neutro", ""]]);
+      neutros++;
+      continue;
+    }
+
+    const [sentimento, confianca, categoria, emocao, palavras] = resultado.split("|").map(s => s.trim());
+
+    sheet.getRange(i + 1, novaColunaInicio + 1, 1, 5).setValues([[sentimento, confianca, categoria, emocao, palavras]]);
+
+    if (sentimento.toLowerCase() === "positivo") positivos++;
+    else if (sentimento.toLowerCase() === "negativo") negativos++;
+    else neutros++;
+  }
+
+  // Exibir big numbers ao final
+  const total = positivos + negativos + neutros;
+  const resumoSheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName("Resumo Sentimentos") || 
+                      SpreadsheetApp.getActiveSpreadsheet().insertSheet("Resumo Sentimentos");
+
+  resumoSheet.clear();
+  resumoSheet.getRange("A1:B5").setValues([
+    ["📊 Total de Feedbacks", total],
+    ["✅ Positivos", positivos],
+    ["⚠️ Negativos", negativos],
+    ["➖ Neutros", neutros],
+    ["💚 Taxa de Satisfação", total ? `${((positivos / total) * 100).toFixed(1)}%` : "0%"]
+  ]);
+
+  SpreadsheetApp.getUi().alert("✅ Análise de sentimentos concluída com sucesso!");
+}
+
+function chamarIA(prompt) {
+  const response = UrlFetchApp.fetch("https://api.groq.com/openai/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${GROQ_API_KEY}`
+    },
+    payload: JSON.stringify({
+      model: "llama3-8b-8192",
+      messages: [{ role: "user", content: prompt }],
+      temperature: 0.1,
+      max_tokens: 200
+    }),
+    muteHttpExceptions: true,
+  });
+
+  const result = JSON.parse(response.getContentText());
+  try {
+    return result.choices[0].message.content.trim();
+  } catch (e) {
+    Logger.log("Erro de resposta da IA: " + JSON.stringify(result));
+    return null;
+  }
+}
